@@ -13,6 +13,33 @@ import { ModalRoot, ModalHeader, ModalContent, ModalFooter, openModal } from "@u
 import { Button } from "@webpack/common";
 import { addContextMenuPatch, NavContextMenuPatchCallback, removeContextMenuPatch } from "@api/ContextMenu";
 
+const LOG_TYPE_CONFIG = {
+    activity: {
+        icon: "🎮",
+        color: "#5865F2",
+        bgColor: "rgba(88, 101, 242, 0.1)",
+        label: "Activity"
+    },
+    voice: {
+        icon: "🔊",
+        color: "#57F287",
+        bgColor: "rgba(87, 242, 135, 0.1)",
+        label: "Voice"
+    },
+    message: {
+        icon: "💬",
+        color: "#FEE75C",
+        bgColor: "rgba(254, 231, 92, 0.1)",
+        label: "Message"
+    },
+    status: {
+        icon: "🟢",
+        color: "#EB459E",
+        bgColor: "rgba(235, 69, 158, 0.1)",
+        label: "Status"
+    }
+};
+
 interface Activity {
     name: string;
     type: number;
@@ -58,6 +85,8 @@ interface ActivityLog {
 const activityLogs: ActivityLog[] = [];
 const MAX_LOGS = 1000;
 const trackedUserIds = new Set<string>();
+const processedMessageIds = new Set<string>();
+const lastKnownStatus = new Map<string, string>();
 
 const settings = definePluginSettings({
     autoTrackAll: {
@@ -70,6 +99,8 @@ const settings = definePluginSettings({
 function ActivityDashboard({ logs, modalProps }: { logs: ActivityLog[], modalProps: any }) {
     const [searchUser, setSearchUser] = React.useState("");
     const [selectedUserId, setSelectedUserId] = React.useState<string | null>(null);
+    const [showStats, setShowStats] = React.useState(false);
+    const [statsUserId, setStatsUserId] = React.useState<string | null>(null);
 
     console.log('[ActivityTracker] Rendering dashboard, logs:', logs.length, 'modalProps:', modalProps);
 
@@ -87,164 +118,519 @@ function ActivityDashboard({ logs, modalProps }: { logs: ActivityLog[], modalPro
             return { id, username: log?.username || "Unknown" };
         });
 
+    // Calculate statistics for selected user or all
+    const calculateStats = (userId: string | null) => {
+        const userSpecificLogs = userId ? logs.filter(l => l.userId === userId) : logs;
+        
+        // Message count
+        const messageCount = userSpecificLogs.filter(l => l.type === "message").length;
+        
+        // Activity count by type
+        const activityCount = userSpecificLogs.filter(l => l.type === "activity").length;
+        const voiceCount = userSpecificLogs.filter(l => l.type === "voice").length;
+        const statusCount = userSpecificLogs.filter(l => l.type === "status").length;
+        
+        // Most active hours (0-23)
+        const hourCounts: { [hour: number]: number } = {};
+        for (let i = 0; i < 24; i++) hourCounts[i] = 0;
+        
+        userSpecificLogs.forEach(log => {
+            const hour = new Date(log.timestamp).getHours();
+            hourCounts[hour]++;
+        });
+        
+        const mostActiveHour = Object.entries(hourCounts)
+            .sort(([, a], [, b]) => b - a)[0];
+        
+        // Voice time tracking (approximate based on join/leave events)
+        const voiceLogs = userSpecificLogs.filter(l => l.type === "voice");
+        let totalVoiceMinutes = 0;
+        let lastJoinTime: number | null = null;
+        
+        voiceLogs.forEach(log => {
+            if (log.voiceChannel?.action === "join") {
+                lastJoinTime = log.timestamp;
+            } else if (log.voiceChannel?.action === "leave" && lastJoinTime) {
+                totalVoiceMinutes += (log.timestamp - lastJoinTime) / (1000 * 60);
+                lastJoinTime = null;
+            }
+        });
+        
+        // Activity heatmap data (day of week + hour)
+        const heatmapData: { [key: string]: number } = {};
+        userSpecificLogs.forEach(log => {
+            const date = new Date(log.timestamp);
+            const day = date.getDay(); // 0-6
+            const hour = date.getHours(); // 0-23
+            const key = `${day}-${hour}`;
+            heatmapData[key] = (heatmapData[key] || 0) + 1;
+        });
+        
+        return {
+            messageCount,
+            activityCount,
+            voiceCount,
+            statusCount,
+            totalLogs: userSpecificLogs.length,
+            mostActiveHour: mostActiveHour ? `${mostActiveHour[0]}:00 (${mostActiveHour[1]} events)` : "N/A",
+            hourCounts,
+            totalVoiceMinutes: Math.round(totalVoiceMinutes),
+            heatmapData
+        };
+    };
+
+    const stats = calculateStats(statsUserId);
+
     return (
         <ModalRoot transitionState={modalProps.transitionState}>
             <ModalHeader>
-                <Forms.FormTitle tag="h2">Activity Tracker Dashboard</Forms.FormTitle>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", paddingRight: "40px" }}>
+                    <div>
+                        <Forms.FormTitle tag="h2" style={{ margin: 0, display: "flex", alignItems: "center", gap: "8px" }}>
+                            📊 Activity Tracker
+                        </Forms.FormTitle>
+                        <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "4px" }}>
+                            {logs.length} total logs • {trackedUserIds.size} tracked users
+                        </div>
+                    </div>
+                </div>
             </ModalHeader>
-            <ModalContent style={{ padding: "16px", maxHeight: "600px", overflow: "auto" }}>
-                <div style={{ marginBottom: "16px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                    <Button
-                        color={Button.Colors.BRAND}
-                        size={Button.Sizes.SMALL}
-                        onClick={() => {
-                            const json = JSON.stringify(activityLogs, null, 2);
-                            const blob = new Blob([json], { type: "application/json" });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement("a");
-                            a.href = url;
-                            a.download = `activity-logs-${Date.now()}.json`;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                        }}
-                    >
-                        📥 Export JSON
-                    </Button>
-                    <Button
-                        color={Button.Colors.PRIMARY}
-                        size={Button.Sizes.SMALL}
-                        onClick={() => {
-                            let text = "Activity Tracker Logs\n" + "=".repeat(50) + "\n\n";
-                            activityLogs.forEach(log => {
-                                text += `${log.username} - ${log.type} - ${new Date(log.timestamp).toLocaleString()}\n`;
-                                if (log.type === "activity" && log.activities) {
-                                    log.activities.forEach(act => {
-                                        text += `  • ${act.name}${act.details ? ` - ${act.details}` : ""}\n`;
-                                    });
-                                } else if (log.type === "voice" && log.voiceChannel) {
-                                    text += `  ${log.username} has ${log.voiceChannel.action}ed the voice channel "${log.voiceChannel.channelName}", in the server "${log.voiceChannel.guildName || "Unknown Server"}" at ${new Date(log.timestamp).toLocaleTimeString()}\n`;
-                                } else if (log.type === "message" && log.message) {
-                                    text += `  ${log.message.content}\n`;
-                                } else if (log.type === "status" && log.status) {
-                                    text += `  Status: ${log.status.status}\n`;
-                                }
-                                text += "\n";
-                            });
-                            const blob = new Blob([text], { type: "text/plain" });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement("a");
-                            a.href = url;
-                            a.download = `activity-logs-${Date.now()}.txt`;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                        }}
-                    >
-                        📄 Export TXT
-                    </Button>
-                    <Button
-                        color={Button.Colors.RED}
-                        size={Button.Sizes.SMALL}
-                        onClick={() => {
-                            activityLogs.length = 0;
-                            trackedUserIds.clear();
-                            modalProps.onClose();
-                        }}
-                    >
-                        🗑️ Clear All
-                    </Button>
-                </div>
-
-                <div style={{ marginBottom: "16px" }}>
-                    <Forms.FormTitle>Tracked Users ({trackedUserIds.size})</Forms.FormTitle>
-                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "16px" }}>
-                        {Array.from(trackedUserIds).map(userId => {
-                            const user = UserStore.getUser(userId);
-                            const username = user ? `${user.username}` : userId;
-                            return (
-                                <Button
-                                    key={userId}
-                                    size={Button.Sizes.SMALL}
-                                    color={Button.Colors.GREEN}
-                                    onClick={() => {
-                                        trackedUserIds.delete(userId);
-                                    }}
-                                >
-                                    ✓ {username}
-                                </Button>
-                            );
-                        })}
+            <ModalContent style={{ padding: "20px", maxHeight: "700px", overflow: "auto", background: "var(--background-primary)" }}>
+                {/* Action Buttons Card */}
+                <div style={{ 
+                    background: "var(--background-secondary)",
+                    padding: "16px",
+                    borderRadius: "12px",
+                    marginBottom: "20px",
+                    boxShadow: "0 2px 10px rgba(0,0,0,0.1)"
+                }}>
+                    <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "12px", textTransform: "uppercase", fontWeight: "600" }}>Actions</div>
+                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                        <Button
+                            color={Button.Colors.BRAND}
+                            size={Button.Sizes.SMALL}
+                            onClick={() => {
+                                const json = JSON.stringify(activityLogs, null, 2);
+                                const blob = new Blob([json], { type: "application/json" });
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement("a");
+                                a.href = url;
+                                a.download = `activity-logs-${Date.now()}.json`;
+                                a.click();
+                                URL.revokeObjectURL(url);
+                            }}
+                        >
+                            📥 Export JSON
+                        </Button>
+                        <Button
+                            color={Button.Colors.PRIMARY}
+                            size={Button.Sizes.SMALL}
+                            onClick={() => {
+                                let text = "Activity Tracker Logs\n" + "=".repeat(50) + "\n\n";
+                                activityLogs.forEach(log => {
+                                    text += `${log.username} - ${log.type} - ${new Date(log.timestamp).toLocaleString()}\n`;
+                                    if (log.type === "activity" && log.activities) {
+                                        log.activities.forEach(act => {
+                                            text += `  • ${act.name}${act.details ? ` - ${act.details}` : ""}\n`;
+                                        });
+                                    } else if (log.type === "voice" && log.voiceChannel) {
+                                        text += `  ${log.username} has ${log.voiceChannel.action}ed the voice channel "${log.voiceChannel.channelName}", in the server "${log.voiceChannel.guildName || "Unknown Server"}" at ${new Date(log.timestamp).toLocaleTimeString()}\n`;
+                                    } else if (log.type === "message" && log.message) {
+                                        text += `  ${log.message.content}\n`;
+                                    } else if (log.type === "status" && log.status) {
+                                        text += `  Status: ${log.status.status}\n`;
+                                    }
+                                    text += "\n";
+                                });
+                                const blob = new Blob([text], { type: "text/plain" });
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement("a");
+                                a.href = url;
+                                a.download = `activity-logs-${Date.now()}.txt`;
+                                a.click();
+                                URL.revokeObjectURL(url);
+                            }}
+                        >
+                            📄 Export TXT
+                        </Button>
+                        <Button
+                            color={Button.Colors.RED}
+                            size={Button.Sizes.SMALL}
+                            onClick={() => {
+                                activityLogs.length = 0;
+                                trackedUserIds.clear();
+                                modalProps.onClose();
+                            }}
+                        >
+                            🗑️ Clear All
+                        </Button>
                     </div>
                 </div>
 
-                <div style={{ marginBottom: "16px" }}>
-                    <Forms.FormTitle>Users with Activity Logs ({uniqueUsers.length})</Forms.FormTitle>
-                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "16px" }}>
-                        {uniqueUsers.map(user => {
-                            const isTracked = trackedUserIds.has(user.id);
-                            return (
-                                <Button
-                                    key={user.id}
-                                    size={Button.Sizes.SMALL}
-                                    color={selectedUserId === user.id ? Button.Colors.BRAND : (isTracked ? Button.Colors.GREEN : Button.Colors.PRIMARY)}
-                                    onClick={() => setSelectedUserId(selectedUserId === user.id ? null : user.id)}
-                                >
-                                    {isTracked ? "✓ " : ""}{user.username}
-                                </Button>
-                            );
-                        })}
+                {/* Statistics Card */}
+                <div style={{ 
+                    background: "var(--background-secondary)",
+                    padding: "16px",
+                    borderRadius: "12px",
+                    marginBottom: "20px",
+                    boxShadow: "0 2px 10px rgba(0,0,0,0.1)"
+                }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                        <div style={{ fontSize: "12px", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: "600" }}>
+                            📊 Statistics {statsUserId && `- ${uniqueUsers.find(u => u.id === statsUserId)?.username}`}
+                        </div>
+                        <Button
+                            size={Button.Sizes.SMALL}
+                            color={showStats ? Button.Colors.BRAND : Button.Colors.PRIMARY}
+                            onClick={() => setShowStats(!showStats)}
+                        >
+                            {showStats ? "Hide" : "Show"}
+                        </Button>
                     </div>
-                </div>
-
-                <TextInput
-                    placeholder="Search by username or user ID..."
-                    value={searchUser}
-                    onChange={setSearchUser}
-                    style={{ marginBottom: "16px" }}
-                />
-
-                <Forms.FormTitle>Activity Logs ({userLogs.length})</Forms.FormTitle>
-                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                    {userLogs.slice(-50).reverse().map((log, idx) => (
-                        <div key={idx} style={{
-                            background: "var(--background-secondary)",
-                            padding: "12px",
-                            borderRadius: "8px"
-                        }}>
-                            <div style={{ fontWeight: "bold", marginBottom: "4px" }}>
-                                {log.username} - {log.type}
+                    
+                    {showStats && (
+                        <div>
+                            {/* User Selection */}
+                            <div style={{ marginBottom: "16px" }}>
+                                <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "8px" }}>Select User</div>
+                                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                                    {uniqueUsers.map(user => (
+                                        <Button
+                                            key={user.id}
+                                            size={Button.Sizes.SMALL}
+                                            color={statsUserId === user.id ? Button.Colors.BRAND : Button.Colors.PRIMARY}
+                                            onClick={() => setStatsUserId(statsUserId === user.id ? null : user.id)}
+                                        >
+                                            {user.username}
+                                        </Button>
+                                    ))}
+                                </div>
                             </div>
-                            <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "8px" }}>
-                                {new Date(log.timestamp).toLocaleString()}
+
+                            {statsUserId ? (
+                                <div>
+                            {/* Overview Stats */}
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "12px", marginBottom: "16px" }}>
+                                <div style={{ background: "var(--background-tertiary)", padding: "12px", borderRadius: "8px", textAlign: "center" }}>
+                                    <div style={{ fontSize: "24px", fontWeight: "bold", color: "#FEE75C" }}>{stats.messageCount}</div>
+                                    <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>Messages</div>
+                                </div>
+                                <div style={{ background: "var(--background-tertiary)", padding: "12px", borderRadius: "8px", textAlign: "center" }}>
+                                    <div style={{ fontSize: "24px", fontWeight: "bold", color: "#5865F2" }}>{stats.activityCount}</div>
+                                    <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>Activities</div>
+                                </div>
+                                <div style={{ background: "var(--background-tertiary)", padding: "12px", borderRadius: "8px", textAlign: "center" }}>
+                                    <div style={{ fontSize: "24px", fontWeight: "bold", color: "#57F287" }}>{stats.voiceCount}</div>
+                                    <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>Voice Events</div>
+                                </div>
+                                <div style={{ background: "var(--background-tertiary)", padding: "12px", borderRadius: "8px", textAlign: "center" }}>
+                                    <div style={{ fontSize: "24px", fontWeight: "bold", color: "#EB459E" }}>{stats.statusCount}</div>
+                                    <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>Status Changes</div>
+                                </div>
                             </div>
-                            {log.type === "activity" && log.activities?.map((activity, i) => (
-                                <div key={i} style={{
-                                    background: "var(--background-tertiary)",
-                                    padding: "8px",
-                                    borderRadius: "4px",
-                                    marginTop: "4px"
-                                }}>
-                                    <div style={{ fontWeight: "500" }}>{activity.name}</div>
-                                    {activity.details && <div style={{ fontSize: "12px" }}>{activity.details}</div>}
-                                    {activity.state && <div style={{ fontSize: "12px" }}>{activity.state}</div>}
+
+                            {/* Voice Time */}
+                            <div style={{ background: "var(--background-tertiary)", padding: "12px", borderRadius: "8px", marginBottom: "16px" }}>
+                                <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "8px" }}>Total Voice Time</div>
+                                <div style={{ fontSize: "20px", fontWeight: "bold", color: "var(--header-primary)" }}>
+                                    {Math.floor(stats.totalVoiceMinutes / 60)}h {stats.totalVoiceMinutes % 60}m
                                 </div>
-                            ))}
-                            {log.type === "voice" && log.voiceChannel && (
-                                <div style={{ fontSize: "12px" }}>
-                                    {log.username} has {log.voiceChannel.action}ed the voice channel "{log.voiceChannel.channelName}", in the server "{log.voiceChannel.guildName || "Unknown Server"}" at {new Date(log.timestamp).toLocaleTimeString()}
+                            </div>
+
+                            {/* Most Active Hour */}
+                            <div style={{ background: "var(--background-tertiary)", padding: "12px", borderRadius: "8px", marginBottom: "16px" }}>
+                                <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "8px" }}>Most Active Hour</div>
+                                <div style={{ fontSize: "16px", fontWeight: "600", color: "var(--header-primary)" }}>
+                                    {stats.mostActiveHour}
                                 </div>
-                            )}
-                            {log.type === "message" && log.message && (
-                                <div style={{ fontSize: "12px", fontStyle: "italic" }}>
-                                    {log.message.content}
+                            </div>
+
+                            {/* Hourly Activity Chart */}
+                            <div style={{ background: "var(--background-tertiary)", padding: "12px", borderRadius: "8px", marginBottom: "16px" }}>
+                                <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "12px" }}>Activity by Hour</div>
+                                <div style={{ display: "flex", alignItems: "flex-end", gap: "2px", height: "80px" }}>
+                                    {Object.entries(stats.hourCounts).map(([hour, count]) => {
+                                        const maxCount = Math.max(...Object.values(stats.hourCounts));
+                                        const height = maxCount > 0 ? (count / maxCount) * 100 : 0;
+                                        return (
+                                            <div 
+                                                key={hour}
+                                                style={{ 
+                                                    flex: 1,
+                                                    background: count > 0 ? "#5865F2" : "var(--background-secondary)",
+                                                    height: `${height}%`,
+                                                    borderRadius: "2px 2px 0 0",
+                                                    minHeight: count > 0 ? "4px" : "2px",
+                                                    opacity: count > 0 ? 1 : 0.3,
+                                                    position: "relative",
+                                                    cursor: "pointer"
+                                                }}
+                                                title={`${hour}:00 - ${count} events`}
+                                            />
+                                        );
+                                    })}
                                 </div>
-                            )}
-                            {log.type === "status" && log.status && (
-                                <div style={{ fontSize: "12px" }}>
-                                    Status: {log.status.status}
+                                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "var(--text-muted)", marginTop: "4px" }}>
+                                    <span>0h</span>
+                                    <span>6h</span>
+                                    <span>12h</span>
+                                    <span>18h</span>
+                                    <span>24h</span>
+                                </div>
+                            </div>
+
+                            {/* Activity Heatmap */}
+                            <div style={{ background: "var(--background-tertiary)", padding: "12px", borderRadius: "8px" }}>
+                                <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "12px" }}>Activity Heatmap (Day/Hour)</div>
+                                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginBottom: "8px" }}>
+                                    <div style={{ display: "grid", gridTemplateColumns: "30px repeat(24, 1fr)", gap: "2px" }}>
+                                        <div></div>
+                                        {[...Array(24)].map((_, h) => (
+                                            <div key={h} style={{ textAlign: "center" }}>{h % 6 === 0 ? h : ""}</div>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div style={{ display: "grid", gridTemplateColumns: "30px repeat(24, 1fr)", gap: "2px" }}>
+                                    {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day, dayIdx) => (
+                                        <React.Fragment key={dayIdx}>
+                                            <div style={{ fontSize: "10px", color: "var(--text-muted)", display: "flex", alignItems: "center" }}>{day}</div>
+                                            {[...Array(24)].map((_, hour) => {
+                                                const key = `${dayIdx}-${hour}`;
+                                                const count = stats.heatmapData[key] || 0;
+                                                const maxHeatmap = Math.max(...Object.values(stats.heatmapData));
+                                                const intensity = maxHeatmap > 0 ? count / maxHeatmap : 0;
+                                                return (
+                                                    <div
+                                                        key={hour}
+                                                        style={{
+                                                            background: count > 0 ? `rgba(88, 101, 242, ${0.2 + intensity * 0.8})` : "var(--background-secondary)",
+                                                            aspectRatio: "1",
+                                                            borderRadius: "2px",
+                                                            cursor: "pointer"
+                                                        }}
+                                                        title={`${day} ${hour}:00 - ${count} events`}
+                                                    />
+                                                );
+                                            })}
+                                        </React.Fragment>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                            ) : (
+                                <div style={{ padding: "20px", textAlign: "center", color: "var(--text-muted)" }}>
+                                    Select a user to view their statistics
                                 </div>
                             )}
                         </div>
-                    ))}
+                    )}
+                </div>
+
+                {/* Tracked Users Card */}
+                {trackedUserIds.size > 0 && (
+                    <div style={{ 
+                        background: "var(--background-secondary)",
+                        padding: "16px",
+                        borderRadius: "12px",
+                        marginBottom: "20px",
+                        boxShadow: "0 2px 10px rgba(0,0,0,0.1)"
+                    }}>
+                        <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "12px", textTransform: "uppercase", fontWeight: "600" }}>✅ Tracked Users ({trackedUserIds.size})</div>
+                        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                            {Array.from(trackedUserIds).map(userId => {
+                                const user = UserStore.getUser(userId);
+                                const username = user ? `${user.username}` : userId;
+                                return (
+                                    <div key={userId} style={{ display: "flex", alignItems: "center", gap: "6px", background: "var(--background-tertiary)", padding: "6px 8px", borderRadius: "8px" }}>
+                                        <span style={{ color: "white", fontSize: "13px" }}>✓ {username}</span>
+                                        <Button
+                                            size={Button.Sizes.SMALL}
+                                            color={Button.Colors.RED}
+                                            onClick={() => {
+                                                trackedUserIds.delete(userId);
+                                            }}
+                                            style={{ padding: "0 6px", height: "20px", fontSize: "12px" }}
+                                        >
+                                            ✕
+                                        </Button>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
+
+                {/* User Filter Card */}
+                {uniqueUsers.length > 0 && (
+                    <div style={{ 
+                        background: "var(--background-secondary)",
+                        padding: "16px",
+                        borderRadius: "12px",
+                        marginBottom: "20px",
+                        boxShadow: "0 2px 10px rgba(0,0,0,0.1)"
+                    }}>
+                        <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "12px", textTransform: "uppercase", fontWeight: "600" }}>👥 Filter by User ({uniqueUsers.length})</div>
+                        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                            {uniqueUsers.map(user => {
+                                const isTracked = trackedUserIds.has(user.id);
+                                return (
+                                    <Button
+                                        key={user.id}
+                                        size={Button.Sizes.SMALL}
+                                        color={selectedUserId === user.id ? Button.Colors.BRAND : (isTracked ? Button.Colors.GREEN : Button.Colors.PRIMARY)}
+                                        onClick={() => setSelectedUserId(selectedUserId === user.id ? null : user.id)}
+                                    >
+                                        {isTracked ? "✓ " : ""}{user.username}
+                                    </Button>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
+
+                {/* Search Card */}
+                <div style={{ 
+                    background: "var(--background-secondary)",
+                    padding: "16px",
+                    borderRadius: "12px",
+                    marginBottom: "20px",
+                    boxShadow: "0 2px 10px rgba(0,0,0,0.1)"
+                }}>
+                    <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "12px", textTransform: "uppercase", fontWeight: "600" }}>🔍 Search</div>
+                    <TextInput
+                        placeholder="Search by username or user ID..."
+                        value={searchUser}
+                        onChange={setSearchUser}
+                    />
+                </div>
+
+                {/* Activity Logs Card */}
+                <div style={{ 
+                    background: "var(--background-secondary)",
+                    padding: "16px",
+                    borderRadius: "12px",
+                    boxShadow: "0 2px 10px rgba(0,0,0,0.1)"
+                }}>
+                    <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "16px", textTransform: "uppercase", fontWeight: "600" }}>📋 Activity Logs ({userLogs.length})</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                        {userLogs.length === 0 ? (
+                            <div style={{
+                                padding: "40px",
+                                textAlign: "center",
+                                color: "var(--text-muted)"
+                            }}>
+                                <div style={{ fontSize: "48px", marginBottom: "12px" }}>📭</div>
+                                <div style={{ fontSize: "16px", fontWeight: "600", marginBottom: "8px" }}>No logs found</div>
+                                <div style={{ fontSize: "13px" }}>Start tracking users to see their activity here</div>
+                            </div>
+                        ) : (
+                            userLogs.slice(-50).reverse().map((log, idx) => {
+                                        const config = LOG_TYPE_CONFIG[log.type];
+                                        return (
+                                            <div key={idx} style={{
+                                                background: "var(--background-tertiary)",
+                                                padding: "14px",
+                                                borderRadius: "10px",
+                                                borderLeft: `4px solid ${config.color}`,
+                                                position: "relative",
+                                                transition: "transform 0.2s, box-shadow 0.2s",
+                                                cursor: "pointer"
+                                            }}
+                                            onMouseEnter={(e) => {
+                                                e.currentTarget.style.transform = "translateX(4px)";
+                                                e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.15)";
+                                            }}
+                                            onMouseLeave={(e) => {
+                                                e.currentTarget.style.transform = "translateX(0)";
+                                                e.currentTarget.style.boxShadow = "none";
+                                            }}>
+                                                <div style={{ 
+                                                    display: "flex", 
+                                                    alignItems: "center", 
+                                                    gap: "10px",
+                                                    marginBottom: "8px" 
+                                                }}>
+                                                    <span style={{ fontSize: "20px" }}>{config.icon}</span>
+                                                    <div style={{ flex: 1 }}>
+                                                        <div style={{ fontWeight: "bold", color: "var(--header-primary)", fontSize: "14px" }}>
+                                                            {log.username}
+                                                        </div>
+                                                        <div style={{ 
+                                                            fontSize: "10px", 
+                                                            color: config.color,
+                                                            fontWeight: "700",
+                                                            textTransform: "uppercase",
+                                                            letterSpacing: "0.5px"
+                                                        }}>
+                                                            {config.label}
+                                                        </div>
+                                                    </div>
+                                                    <div style={{ 
+                                                        fontSize: "11px", 
+                                                        color: "var(--text-muted)",
+                                                        background: "var(--background-secondary)",
+                                                        padding: "4px 8px",
+                                                        borderRadius: "4px"
+                                                    }}>
+                                                        {new Date(log.timestamp).toLocaleTimeString()}
+                                                    </div>
+                                                </div>
+                                {log.type === "activity" && log.activities?.map((activity, i) => (
+                                    <div key={i} style={{
+                                        background: config.bgColor,
+                                        padding: "8px",
+                                        borderRadius: "4px",
+                                        marginTop: "8px",
+                                        borderLeft: `2px solid ${config.color}`,
+                                        color: "white"
+                                    }}>
+                                        <div style={{ fontWeight: "500", color: "var(--header-primary)" }}>{activity.name}</div>
+                                        {activity.details && <div style={{ fontSize: "12px", color: "white" }}>{activity.details}</div>}
+                                        {activity.state && <div style={{ fontSize: "12px", color: "white" }}>{activity.state}</div>}
+                                    </div>
+                                ))}
+                                {log.type === "voice" && log.voiceChannel && (
+                                    <div style={{ 
+                                        fontSize: "13px", 
+                                        marginTop: "8px",
+                                        background: config.bgColor,
+                                        padding: "8px",
+                                        borderRadius: "4px",
+                                        color: "white"
+                                    }}>
+                                        <strong>{log.voiceChannel.action === "join" ? "Joined" : log.voiceChannel.action === "leave" ? "Left" : "Moved to"}</strong> voice channel <strong>"{log.voiceChannel.channelName}"</strong> in server <strong>"{log.voiceChannel.guildName || "Unknown Server"}"</strong>
+                                    </div>
+                                )}
+                                {log.type === "message" && log.message && (
+                                    <div style={{ 
+                                        fontSize: "13px", 
+                                        marginTop: "8px",
+                                        background: config.bgColor,
+                                        padding: "8px",
+                                        borderRadius: "4px",
+                                        fontStyle: "italic",
+                                        color: "white"
+                                    }}>
+                                        {log.message.content}
+                                    </div>
+                                )}
+                                {log.type === "status" && log.status && (
+                                    <div style={{ 
+                                        fontSize: "13px", 
+                                        marginTop: "8px",
+                                        background: config.bgColor,
+                                        padding: "8px",
+                                        borderRadius: "4px",
+                                        color: "white"
+                                    }}>
+                                        Status changed to: <strong style={{ color: config.color }}>{log.status.status.toUpperCase()}</strong>
+                                    </div>
+                                )}
+                                            </div>
+                                        );
+                                    })
+                                )}
+                    </div>
                 </div>
             </ModalContent>
             <ModalFooter>
@@ -328,20 +714,36 @@ export default definePlugin({
         const user = UserStore.getUser(data.user.id);
         if (!user) return;
 
-        // Log status changes
-        if (data.status) {
+        // Get current status from presence data
+        const currentStatus = data.status || (data.clientStatus?.web || data.clientStatus?.desktop || data.clientStatus?.mobile) || "unknown";
+        const previousStatus = lastKnownStatus.get(user.id);
+
+        console.log('[ActivityTracker] PRESENCE_UPDATE:', { 
+            userId: user.id, 
+            username: user.username, 
+            currentStatus,
+            previousStatus,
+            rawStatus: data.status, 
+            clientStatus: data.clientStatus,
+            activities: data.activities 
+        });
+
+        // Log status changes only if status actually changed
+        if (currentStatus && currentStatus !== previousStatus) {
+            lastKnownStatus.set(user.id, currentStatus);
+            
             const log: ActivityLog = {
                 userId: user.id,
                 username: `${user.username}`,
                 timestamp: Date.now(),
                 type: "status",
                 status: {
-                    status: data.status,
+                    status: currentStatus,
                     clientStatus: data.clientStatus
                 }
             };
             activityLogs.push(log);
-            console.log(`[ActivityTracker] ${log.username} status:`, data.status);
+            console.log(`[ActivityTracker] ${log.username} status changed: ${previousStatus || 'none'} -> ${currentStatus}`);
         }
 
         // Log activities
@@ -419,6 +821,10 @@ export default definePlugin({
         const { message } = data;
         if (!message?.author?.id) return;
 
+        // Prevent duplicate messages
+        if (message.id && processedMessageIds.has(message.id)) return;
+        if (message.id) processedMessageIds.add(message.id);
+
         const shouldTrack = settings.store.autoTrackAll || trackedUserIds.has(message.author.id);
         if (!shouldTrack) return;
 
@@ -436,6 +842,13 @@ export default definePlugin({
 
         activityLogs.push(log);
         if (activityLogs.length > MAX_LOGS) activityLogs.shift();
+        
+        // Clean up old message IDs (keep last 1000)
+        if (processedMessageIds.size > 1000) {
+            const idsArray = Array.from(processedMessageIds);
+            processedMessageIds.clear();
+            idsArray.slice(-500).forEach(id => processedMessageIds.add(id));
+        }
         
         console.log(`[ActivityTracker] ${log.username} message:`, message.content?.substring(0, 50));
     },
