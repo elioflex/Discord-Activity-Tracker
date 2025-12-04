@@ -8,7 +8,7 @@ import { Devs } from "@utils/constants";
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
 import { findByPropsLazy } from "@webpack";
-import { FluxDispatcher, UserStore, React, Menu, Forms, TextInput, ChannelStore, GuildStore } from "@webpack/common";
+import { FluxDispatcher, UserStore, React, Menu, Forms, TextInput, ChannelStore, GuildStore, PresenceStore } from "@webpack/common";
 import { ModalRoot, ModalHeader, ModalContent, ModalFooter, openModal } from "@utils/modal";
 import { Button } from "@webpack/common";
 import { addContextMenuPatch, NavContextMenuPatchCallback, removeContextMenuPatch } from "@api/ContextMenu";
@@ -692,76 +692,79 @@ export default definePlugin({
     settings,
 
     start() {
-        FluxDispatcher.subscribe("PRESENCE_UPDATE", this.handlePresenceUpdate);
+        FluxDispatcher.subscribe("PRESENCE_UPDATES", this.handlePresenceUpdates);
         FluxDispatcher.subscribe("VOICE_STATE_UPDATES", this.handleVoiceStateUpdate);
         FluxDispatcher.subscribe("MESSAGE_CREATE", this.handleMessageCreate);
         addContextMenuPatch("user-context", UserContextMenuPatch);
+        console.log('[ActivityTracker] Plugin started, listening to events');
     },
 
     stop() {
-        FluxDispatcher.unsubscribe("PRESENCE_UPDATE", this.handlePresenceUpdate);
+        FluxDispatcher.unsubscribe("PRESENCE_UPDATES", this.handlePresenceUpdates);
         FluxDispatcher.unsubscribe("VOICE_STATE_UPDATES", this.handleVoiceStateUpdate);
         FluxDispatcher.unsubscribe("MESSAGE_CREATE", this.handleMessageCreate);
         removeContextMenuPatch("user-context", UserContextMenuPatch);
     },
 
-    handlePresenceUpdate(data: any) {
-        if (!data?.user?.id) return;
+    handlePresenceUpdates(data: { updates: any[] }) {
+        if (!data?.updates) return;
 
-        const shouldTrack = settings.store.autoTrackAll || trackedUserIds.has(data.user.id);
-        if (!shouldTrack) return;
+        for (const update of data.updates) {
+            if (!update?.user?.id) continue;
 
-        const user = UserStore.getUser(data.user.id);
-        if (!user) return;
+            const shouldTrack = settings.store.autoTrackAll || trackedUserIds.has(update.user.id);
+            if (!shouldTrack) continue;
 
-        // Get current status from presence data
-        const currentStatus = data.status || (data.clientStatus?.web || data.clientStatus?.desktop || data.clientStatus?.mobile) || "unknown";
-        const previousStatus = lastKnownStatus.get(user.id);
+            const user = UserStore.getUser(update.user.id);
+            if (!user) continue;
 
-        console.log('[ActivityTracker] PRESENCE_UPDATE:', { 
-            userId: user.id, 
-            username: user.username, 
-            currentStatus,
-            previousStatus,
-            rawStatus: data.status, 
-            clientStatus: data.clientStatus,
-            activities: data.activities 
-        });
+            const currentStatus = update.status;
+            const previousStatus = lastKnownStatus.get(user.id);
 
-        // Log status changes only if status actually changed
-        if (currentStatus && currentStatus !== previousStatus) {
-            lastKnownStatus.set(user.id, currentStatus);
-            
-            const log: ActivityLog = {
-                userId: user.id,
-                username: `${user.username}`,
-                timestamp: Date.now(),
-                type: "status",
-                status: {
-                    status: currentStatus,
-                    clientStatus: data.clientStatus
-                }
-            };
-            activityLogs.push(log);
-            console.log(`[ActivityTracker] ${log.username} status changed: ${previousStatus || 'none'} -> ${currentStatus}`);
-        }
+            console.log('[ActivityTracker] PRESENCE_UPDATES:', { 
+                userId: user.id, 
+                username: user.username, 
+                currentStatus,
+                previousStatus,
+                clientStatus: update.clientStatus,
+                activities: update.activities
+            });
 
-        // Log activities
-        const activities = data.activities || [];
-        if (activities.length > 0) {
-            const log: ActivityLog = {
-                userId: user.id,
-                username: `${user.username}`,
-                timestamp: Date.now(),
-                type: "activity",
-                activities: activities
-            };
-            activityLogs.push(log);
-            console.log(`[ActivityTracker] ${log.username} activity:`, activities);
-        }
+            // Log status changes only if status actually changed
+            if (currentStatus && currentStatus !== previousStatus && update.clientStatus) {
+                lastKnownStatus.set(user.id, currentStatus);
+                
+                const log: ActivityLog = {
+                    userId: user.id,
+                    username: `${user.username}`,
+                    timestamp: Date.now(),
+                    type: "status",
+                    status: {
+                        status: currentStatus,
+                        clientStatus: update.clientStatus
+                    }
+                };
+                activityLogs.push(log);
+                console.log(`[ActivityTracker] ${log.username} status changed: ${previousStatus || 'none'} -> ${currentStatus}`);
+            }
 
-        if (activityLogs.length > MAX_LOGS) {
-            activityLogs.shift();
+            // Log activities
+            const activities = update.activities || [];
+            if (activities.length > 0) {
+                const log: ActivityLog = {
+                    userId: user.id,
+                    username: `${user.username}`,
+                    timestamp: Date.now(),
+                    type: "activity",
+                    activities: activities
+                };
+                activityLogs.push(log);
+                console.log(`[ActivityTracker] ${log.username} activity:`, activities);
+            }
+
+            if (activityLogs.length > MAX_LOGS) {
+                activityLogs.shift();
+            }
         }
     },
 
