@@ -611,7 +611,7 @@ function ActivityDashboard({ logs, modalProps }: { logs: ActivityLog[], modalPro
                                                         padding: "4px 8px",
                                                         borderRadius: "4px"
                                                     }}>
-                                                        {new Date(log.timestamp).toLocaleTimeString()}
+                                                        {new Date(log.timestamp).toLocaleString()}
                                                     </div>
                                                 </div>
                                 {log.type === "activity" && log.activities?.map((activity, i) => (
