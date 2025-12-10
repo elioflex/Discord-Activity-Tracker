@@ -69,12 +69,14 @@ interface ActivityLog {
         channelName: string;
         action: "join" | "leave" | "move";
         guildId: string;
-        guildName?: string;
+        guildName: string;
     };
     message?: {
         content: string;
         channelId: string;
-        guildId: string;
+        channelName?: string;
+        guildId?: string;
+        guildName?: string;
     };
     status?: {
         status: string;
@@ -82,17 +84,54 @@ interface ActivityLog {
     };
 }
 
-const activityLogs: ActivityLog[] = [];
+let activityLogs: ActivityLog[] = [];
 const MAX_LOGS = 1000;
-const trackedUserIds = new Set<string>();
+let trackedUserIds = new Set<string>();
 const processedMessageIds = new Set<string>();
 const lastKnownStatus = new Map<string, string>();
+
+// Load data from settings
+function loadFromSettings() {
+    try {
+        if (settings.store.trackedUsers) {
+            trackedUserIds = new Set(JSON.parse(settings.store.trackedUsers));
+        }
+        if (settings.store.activityLogs) {
+            activityLogs = JSON.parse(settings.store.activityLogs);
+        }
+        console.log('[ActivityTracker] Loaded from storage:', activityLogs.length, 'logs,', trackedUserIds.size, 'tracked users');
+    } catch (e) {
+        console.error('[ActivityTracker] Failed to load data:', e);
+    }
+}
+
+// Save data to settings
+function saveToSettings() {
+    try {
+        settings.store.trackedUsers = JSON.stringify(Array.from(trackedUserIds));
+        settings.store.activityLogs = JSON.stringify(activityLogs);
+    } catch (e) {
+        console.error('[ActivityTracker] Failed to save data:', e);
+    }
+}
 
 const settings = definePluginSettings({
     autoTrackAll: {
         type: OptionType.BOOLEAN,
         description: "Automatically track all users",
         default: false
+    },
+    trackedUsers: {
+        type: OptionType.STRING,
+        description: "Tracked user IDs (internal use)",
+        default: "",
+        hidden: true
+    },
+    activityLogs: {
+        type: OptionType.STRING,
+        description: "Activity logs data (internal use)",
+        default: "",
+        hidden: true
     }
 });
 
@@ -679,6 +718,7 @@ const UserContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {
                     trackedUserIds.add(userId);
                     console.log('[ActivityTracker] Added user to tracking. Total tracked:', trackedUserIds.size);
                 }
+                saveToSettings();
                 console.log('[ActivityTracker] Tracked users:', Array.from(trackedUserIds));
             }}
         />
@@ -692,6 +732,7 @@ export default definePlugin({
     settings,
 
     start() {
+        loadFromSettings();
         FluxDispatcher.subscribe("PRESENCE_UPDATES", this.handlePresenceUpdates);
         FluxDispatcher.subscribe("VOICE_STATE_UPDATES", this.handleVoiceStateUpdate);
         FluxDispatcher.subscribe("MESSAGE_CREATE", this.handleMessageCreate);
@@ -700,6 +741,7 @@ export default definePlugin({
     },
 
     stop() {
+        saveToSettings();
         FluxDispatcher.unsubscribe("PRESENCE_UPDATES", this.handlePresenceUpdates);
         FluxDispatcher.unsubscribe("VOICE_STATE_UPDATES", this.handleVoiceStateUpdate);
         FluxDispatcher.unsubscribe("MESSAGE_CREATE", this.handleMessageCreate);
@@ -745,6 +787,7 @@ export default definePlugin({
                     }
                 };
                 activityLogs.push(log);
+                saveToSettings();
                 console.log(`[ActivityTracker] ${log.username} status changed: ${previousStatus || 'none'} -> ${currentStatus}`);
             }
 
@@ -759,6 +802,7 @@ export default definePlugin({
                     activities: activities
                 };
                 activityLogs.push(log);
+                saveToSettings();
                 console.log(`[ActivityTracker] ${log.username} activity:`, activities);
             }
 
@@ -806,15 +850,16 @@ export default definePlugin({
                 type: "voice",
                 voiceChannel: {
                     channelId: currentChannelId || prevChannelId || "unknown",
-                    channelName: channel?.name || "Unknown Channel",
+                    channelName: channel?.name || `Channel ID: ${currentChannelId || prevChannelId}`,
                     action: action,
-                    guildId: state.guildId,
-                    guildName: guild?.name || "Unknown Server"
+                    guildId: state.guildId || "unknown",
+                    guildName: guild?.name || `Server ID: ${state.guildId}`
                 }
             };
 
             activityLogs.push(log);
             if (activityLogs.length > MAX_LOGS) activityLogs.shift();
+            saveToSettings();
             
             console.log(`[ActivityTracker] ${log.username} voice:`, log.voiceChannel, 'Raw state:', state);
         });
@@ -824,12 +869,15 @@ export default definePlugin({
         const { message } = data;
         if (!message?.author?.id) return;
 
+        const shouldTrack = settings.store.autoTrackAll || trackedUserIds.has(message.author.id);
+        if (!shouldTrack) return;
+
         // Prevent duplicate messages
         if (message.id && processedMessageIds.has(message.id)) return;
         if (message.id) processedMessageIds.add(message.id);
 
-        const shouldTrack = settings.store.autoTrackAll || trackedUserIds.has(message.author.id);
-        if (!shouldTrack) return;
+        const channel = ChannelStore.getChannel(message.channel_id);
+        const guild = message.guild_id ? GuildStore.getGuild(message.guild_id) : null;
 
         const log: ActivityLog = {
             userId: message.author.id,
@@ -839,12 +887,15 @@ export default definePlugin({
             message: {
                 content: message.content,
                 channelId: message.channel_id,
-                guildId: message.guild_id
+                channelName: channel?.name || `Channel ID: ${message.channel_id}`,
+                guildId: message.guild_id,
+                guildName: guild?.name || (message.guild_id ? `Server ID: ${message.guild_id}` : "DM")
             }
         };
 
         activityLogs.push(log);
         if (activityLogs.length > MAX_LOGS) activityLogs.shift();
+        saveToSettings();
         
         // Clean up old message IDs (keep last 1000)
         if (processedMessageIds.size > 1000) {
