@@ -5,13 +5,15 @@
  */
 
 import { Devs } from "@utils/constants";
-import { definePluginSettings } from "@api/Settings";
+import { definePluginSettings, Settings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
 import { findByPropsLazy } from "@webpack";
 import { FluxDispatcher, UserStore, React, Menu, Forms, TextInput, ChannelStore, GuildStore, PresenceStore } from "@webpack/common";
 import { ModalRoot, ModalHeader, ModalContent, ModalFooter, openModal } from "@utils/modal";
 import { Button } from "@webpack/common";
 import { addContextMenuPatch, NavContextMenuPatchCallback, removeContextMenuPatch } from "@api/ContextMenu";
+import { showNotification } from "@api/Notifications";
+import type { User } from "discord-types/general";
 
 const LOG_TYPE_CONFIG = {
     activity: {
@@ -90,6 +92,23 @@ let trackedUserIds = new Set<string>();
 const processedMessageIds = new Set<string>();
 const lastKnownStatus = new Map<string, string>();
 
+function shouldBeNative() {
+    if (typeof Notification === "undefined") return false;
+    const { useNative } = Settings.notifications;
+    if (useNative === "always") return true;
+    if (useNative === "not-focused") return !document.hasFocus();
+    return false;
+}
+
+const getRichBody = (user: User, text: string | React.ReactNode) => <div
+    style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px" }}>
+    <div style={{ position: "relative" }}>
+        <img src={user.getAvatarURL(void 0, 80, true)}
+            style={{ width: "80px", height: "80px", borderRadius: "15%" }} alt={`${user.username}'s avatar`} />
+    </div>
+    <span>{text}</span>
+</div>;
+
 // Load data from settings
 function loadFromSettings() {
     try {
@@ -119,6 +138,24 @@ const settings = definePluginSettings({
     autoTrackAll: {
         type: OptionType.BOOLEAN,
         description: "Automatically track all users",
+        default: false
+    },
+    notifyStatus: {
+        type: OptionType.BOOLEAN,
+        description: "Notify on status changes",
+        restartNeeded: false,
+        default: true
+    },
+    notifyVoice: {
+        type: OptionType.BOOLEAN,
+        description: "Notify on voice channel changes",
+        restartNeeded: false,
+        default: false
+    },
+    persistNotifications: {
+        type: OptionType.BOOLEAN,
+        description: "Persist notifications",
+        restartNeeded: false,
         default: false
     },
     trackedUsers: {
@@ -789,6 +826,16 @@ export default definePlugin({
                 activityLogs.push(log);
                 saveToSettings();
                 console.log(`[ActivityTracker] ${log.username} status changed: ${previousStatus || 'none'} -> ${currentStatus}`);
+                
+                if (settings.store.notifyStatus && previousStatus) {
+                    const name = user.globalName || user.username;
+                    showNotification({
+                        title: shouldBeNative() ? `${name} changed status` : "User status change",
+                        body: `They are now ${currentStatus}`,
+                        noPersist: !settings.store.persistNotifications,
+                        richBody: getRichBody(user, `${name}'s status is now ${currentStatus}`)
+                    });
+                }
             }
 
             // Log activities
@@ -862,6 +909,26 @@ export default definePlugin({
             saveToSettings();
             
             console.log(`[ActivityTracker] ${log.username} voice:`, log.voiceChannel, 'Raw state:', state);
+            
+            if (settings.store.notifyVoice && currentChannelId !== prevChannelId) {
+                const name = user.username;
+                const title = shouldBeNative() ? `User ${name} changed voice status` : "User voice status change";
+                if (currentChannelId) {
+                    showNotification({
+                        title,
+                        body: "joined a new voice channel",
+                        noPersist: !settings.store.persistNotifications,
+                        richBody: getRichBody(user, `${name} joined a new voice channel`)
+                    });
+                } else {
+                    showNotification({
+                        title,
+                        body: "left their voice channel",
+                        noPersist: !settings.store.persistNotifications,
+                        richBody: getRichBody(user, `${name} left their voice channel`)
+                    });
+                }
+            }
         });
     },
 
