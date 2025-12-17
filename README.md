@@ -4,13 +4,18 @@ A Vencord plugin that tracks Discord user activities including voice channel joi
 
 ## Features
 
-- 🎮 **Activity Tracking** - Monitor gaming, Spotify, streaming, and custom activities
-- 🔊 **Voice Tracking** - Log voice channel joins, leaves, and moves with channel & server names
-- 💬 **Message Logging** - Track all messages from monitored users
-- 🟢 **Status Changes** - Monitor online/offline/idle/dnd status updates
-- 📊 **Dashboard** - Visual interface to view and manage tracked data
-- 📥 **Export** - Export logs in JSON or TXT format
-- 🎯 **User Filtering** - Track specific users or enable auto-track for all
+- **Activity Tracking** - Monitor gaming, Spotify, streaming, and custom activities
+- **Voice Tracking** - Log voice channel joins, leaves, and moves with channel & server names
+- **Message Logging** - Track all messages from monitored users
+- **Status Changes** - Monitor online/offline/idle/dnd status updates
+- **Dashboard** - Visual interface to view and manage tracked data
+- **Export** - Export logs in JSON or TXT format
+- **User Filtering** - Track specific users or enable auto-track for all
+
+## Preview
+
+<img width="388" height="396" alt="Screenshot 2025-12-17 at 16 22 15" src="https://github.com/user-attachments/assets/0b800e86-7dc4-42c9-a312-ad6b5044a4ee" />
+<img width="390" height="305" alt="Screenshot 2025-12-17 at 16 22 28" src="https://github.com/user-attachments/assets/beb929dd-3c8c-42e7-9e8b-a49b76dadb8e" />
 
 ## Installation
 
@@ -51,8 +56,8 @@ Vencord.Plugins.plugins.ActivityTracker.getActivityLogs()
 - **Filter by User** - Click user badges to filter logs
 - **Search** - Search by username or user ID
 - **Export Options**
-  - 📥 Export JSON - Full structured data
-  - 📄 Export TXT - Human-readable format
+  - Export JSON - Full structured data
+  - Export TXT - Human-readable format
 - **Clear All** - 🗑️ Remove all logs and tracked users
 - **Green badges** = Currently tracked users
 - **Activity Types** - Shows activity/voice/message/status with details
