@@ -335,6 +335,7 @@ function ActivityDashboard({ logs, modalProps }: { logs: ActivityLog[], modalPro
                             onClick={() => {
                                 activityLogs.length = 0;
                                 trackedUserIds.clear();
+                                saveToSettings();
                                 modalProps.onClose();
                             }}
                         >
@@ -829,11 +830,19 @@ export default definePlugin({
                 
                 if (settings.store.notifyStatus && previousStatus) {
                     const name = user.globalName || user.username;
+                    const timestamp = new Date();
+                    const timeStr = timestamp.toLocaleTimeString();
+                    const dateStr = timestamp.toLocaleDateString();
                     showNotification({
                         title: shouldBeNative() ? `${name} changed status` : "User status change",
-                        body: `They are now ${currentStatus}`,
+                        body: `${name} is now ${currentStatus}\n${dateStr} at ${timeStr}`,
                         noPersist: !settings.store.persistNotifications,
-                        richBody: getRichBody(user, `${name}'s status is now ${currentStatus}`)
+                        richBody: getRichBody(user, 
+                            <div>
+                                <div style={{ fontWeight: "bold" }}>{name}'s status is now {currentStatus}</div>
+                                <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "4px" }}>{dateStr} at {timeStr}</div>
+                            </div>
+                        )
                     });
                 }
             }
@@ -912,20 +921,39 @@ export default definePlugin({
             
             if (settings.store.notifyVoice && currentChannelId !== prevChannelId) {
                 const name = user.username;
+                const channelName = channel?.name || "Unknown Channel";
+                const guildName = guild?.name || "Unknown Server";
+                const timestamp = new Date();
+                const timeStr = timestamp.toLocaleTimeString();
+                const dateStr = timestamp.toLocaleDateString();
                 const title = shouldBeNative() ? `User ${name} changed voice status` : "User voice status change";
                 if (currentChannelId) {
                     showNotification({
                         title,
-                        body: "joined a new voice channel",
+                        body: `${name} joined "${channelName}" in ${guildName}\n${dateStr} at ${timeStr}`,
                         noPersist: !settings.store.persistNotifications,
-                        richBody: getRichBody(user, `${name} joined a new voice channel`)
+                        richBody: getRichBody(user, 
+                            <div>
+                                <div style={{ fontWeight: "bold" }}>{name} joined voice channel</div>
+                                <div>📢 {channelName}</div>
+                                <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>in {guildName}</div>
+                                <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>{dateStr} at {timeStr}</div>
+                            </div>
+                        )
                     });
                 } else {
                     showNotification({
                         title,
-                        body: "left their voice channel",
+                        body: `${name} left "${channelName}" in ${guildName}\n${dateStr} at ${timeStr}`,
                         noPersist: !settings.store.persistNotifications,
-                        richBody: getRichBody(user, `${name} left their voice channel`)
+                        richBody: getRichBody(user, 
+                            <div>
+                                <div style={{ fontWeight: "bold" }}>{name} left voice channel</div>
+                                <div>📢 {channelName}</div>
+                                <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>in {guildName}</div>
+                                <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>{dateStr} at {timeStr}</div>
+                            </div>
+                        )
                     });
                 }
             }
