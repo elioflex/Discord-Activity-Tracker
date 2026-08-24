@@ -532,7 +532,8 @@ function WeekHeatmap({ heatmapData, sessions }: { heatmapData: Record<string, nu
                                         e.currentTarget.style.transform = "scale(1.2)";
                                         const tt = hourTooltip(d, hour, count);
                                         const r = e.currentTarget.getBoundingClientRect();
-                                        setHoverTip({ text: tt, x: r.left + r.width / 2, y: r.top - 8 });
+                                        const clampX = Math.max(190, Math.min(r.left + r.width / 2, window.innerWidth - 190));
+                                        setHoverTip({ text: tt, x: clampX, y: r.top - 8 });
                                     }}
                                     onMouseLeave={e => {
                                         e.currentTarget.style.transform = "scale(1)";
@@ -654,7 +655,7 @@ function WeekHeatmap({ heatmapData, sessions }: { heatmapData: Record<string, nu
                     background: "var(--background-floating)", border: "1px solid var(--background-modifier-accent)",
                     borderRadius: "8px", padding: "8px 10px", fontSize: "11px", color: "var(--header-primary)",
                     whiteSpace: "pre-line", boxShadow: "0 4px 16px rgba(0,0,0,0.4)", zIndex: 9999, pointerEvents: "none",
-                    maxWidth: "340px"
+                    maxWidth: "340px", width: "max-content"
                 }}>{hoverTip.text}</div>
             )}
         </div>
